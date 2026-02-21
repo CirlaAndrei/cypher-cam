@@ -6,10 +6,12 @@ import time
 class ControlPanel(ttk.Frame):
     """Control panel with settings and stats"""
     
-    def __init__(self, parent, app, **kwargs):
-        super().__init__(parent, **kwargs)
+    def __init__(self, parent, app):
+        super().__init__(parent)
         self.app = app
-        self.style = kwargs.get('style')
+        
+        # Configure the frame
+        self.configure(relief='flat', padding=10)
         
         # Settings variables
         self.record_on_motion = tk.BooleanVar(value=True)
@@ -17,6 +19,7 @@ class ControlPanel(ttk.Frame):
         self.auto_record = tk.BooleanVar(value=False)
         self.alert_enabled = tk.BooleanVar(value=True)
         self.recording_duration = tk.IntVar(value=10)
+        self.show_heatmap = tk.BooleanVar(value=True)  # New heatmap toggle
         
         # Create UI
         self.setup_ui()
@@ -27,8 +30,7 @@ class ControlPanel(ttk.Frame):
         title_label = ttk.Label(
             self, 
             text="CYPHER-CAM",
-            font=('Segoe UI', 18, 'bold'),
-            foreground='#36d6e7'
+            font=('Segoe UI', 18, 'bold')
         )
         title_label.pack(pady=(0, 20))
         
@@ -40,6 +42,9 @@ class ControlPanel(ttk.Frame):
         
         # Noise Detection Section
         self.create_noise_section()
+        
+        # Object Detection Section (NEW)
+        self.create_object_section()
         
         # Recording Settings Section
         self.create_recording_section()
@@ -58,15 +63,13 @@ class ControlPanel(ttk.Frame):
         self.camera_btn = ttk.Button(
             camera_frame, 
             text="START CAMERA",
-            command=self.app.toggle_camera,
-            style='Accent.TButton'
+            command=self.app.toggle_camera
         )
         self.camera_btn.pack(fill=tk.X, pady=5)
         
         self.status_label = ttk.Label(
             camera_frame,
-            text="● Status: Ready",
-            font=('Segoe UI', 9)
+            text="● Status: Ready"
         )
         self.status_label.pack(pady=5)
     
@@ -105,11 +108,18 @@ class ControlPanel(ttk.Frame):
         self.area_label = ttk.Label(motion_frame, text="Min Area: 500")
         self.area_label.pack()
         
+        # Heatmap toggle (NEW)
+        ttk.Checkbutton(
+            motion_frame, 
+            text="Show Heatmap Effect",
+            variable=self.show_heatmap,
+            command=self.toggle_heatmap
+        ).pack(anchor=tk.W, pady=5)
+        
         # Motion status
         self.motion_status = ttk.Label(
             motion_frame, 
-            text="● Status: None",
-            foreground='#8a9199'
+            text="● Status: None"
         )
         self.motion_status.pack(pady=5)
     
@@ -141,8 +151,7 @@ class ControlPanel(ttk.Frame):
         self.noise_bar = ttk.Progressbar(
             level_frame, 
             length=150, 
-            mode='determinate',
-            style='TProgressbar'
+            mode='determinate'
         )
         self.noise_bar.pack(side=tk.LEFT, padx=5)
         self.noise_value = ttk.Label(level_frame, text="0.00")
@@ -151,10 +160,37 @@ class ControlPanel(ttk.Frame):
         # Noise status
         self.noise_status = ttk.Label(
             noise_frame, 
-            text="● Status: None",
-            foreground='#8a9199'
+            text="● Status: None"
         )
         self.noise_status.pack(pady=5)
+    
+    def create_object_section(self):
+        """Create object detection controls (NEW)"""
+        object_frame = ttk.LabelFrame(self, text="Object Detection", padding=10)
+        object_frame.pack(fill=tk.X, pady=5)
+        
+        # Confidence threshold slider
+        ttk.Label(object_frame, text="Confidence:").pack(anchor=tk.W)
+        self.confidence_var = tk.DoubleVar(value=0.5)
+        confidence_scale = ttk.Scale(
+            object_frame, 
+            from_=0.1, to=0.9, 
+            orient=tk.HORIZONTAL,
+            variable=self.confidence_var,
+            command=self.update_confidence
+        )
+        confidence_scale.pack(fill=tk.X, pady=2)
+        
+        self.confidence_label = ttk.Label(object_frame, text="Confidence: 0.50")
+        self.confidence_label.pack()
+        
+        # Detected objects list
+        objects_frame = ttk.Frame(object_frame)
+        objects_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(objects_frame, text="Detected:").pack(side=tk.LEFT)
+        self.objects_list = ttk.Label(objects_frame, text="None")
+        self.objects_list.pack(side=tk.LEFT, padx=5)
     
     def create_recording_section(self):
         """Create recording controls"""
@@ -173,6 +209,13 @@ class ControlPanel(ttk.Frame):
             record_frame, 
             text="Record on Noise",
             variable=self.record_on_noise,
+            command=self.toggle_setting
+        ).pack(anchor=tk.W, pady=2)
+        
+        ttk.Checkbutton(
+            record_frame, 
+            text="Record on Objects",
+            variable=tk.BooleanVar(value=False),  # Placeholder for future
             command=self.toggle_setting
         ).pack(anchor=tk.W, pady=2)
         
@@ -209,16 +252,14 @@ class ControlPanel(ttk.Frame):
         self.manual_btn = ttk.Button(
             record_frame,
             text="⏺ MANUAL RECORD",
-            command=self.app.toggle_manual_recording,
-            style='Danger.TButton'
+            command=self.app.toggle_manual_recording
         )
         self.manual_btn.pack(fill=tk.X, pady=5)
         
         # Recording indicator
         self.recording_indicator = ttk.Label(
             record_frame,
-            text="● Not Recording",
-            foreground='#8a9199'
+            text="● Not Recording"
         )
         self.recording_indicator.pack()
     
@@ -248,6 +289,15 @@ class ControlPanel(ttk.Frame):
         ttk.Label(stats_grid, text="Uptime:", font=('Segoe UI', 9, 'bold')).grid(row=1, column=2, sticky=tk.W, pady=2, padx=(20,0))
         self.uptime_label = ttk.Label(stats_grid, text="00:00:00")
         self.uptime_label.grid(row=1, column=3, sticky=tk.W, pady=2, padx=(10,0))
+
+        # Row 3 (NEW - People count)
+        ttk.Label(stats_grid, text="People:", font=('Segoe UI', 9, 'bold')).grid(row=2, column=0, sticky=tk.W, pady=2)
+        self.people_label = ttk.Label(stats_grid, text="0")
+        self.people_label.grid(row=2, column=1, sticky=tk.W, pady=2, padx=(10,0))
+        
+        ttk.Label(stats_grid, text="Objects:", font=('Segoe UI', 9, 'bold')).grid(row=2, column=2, sticky=tk.W, pady=2, padx=(20,0))
+        self.objects_count_label = ttk.Label(stats_grid, text="0")
+        self.objects_count_label.grid(row=2, column=3, sticky=tk.W, pady=2, padx=(10,0))
     
     def create_events_section(self):
         """Create events log"""
@@ -260,10 +310,7 @@ class ControlPanel(ttk.Frame):
         
         self.events_listbox = tk.Listbox(
             listbox_frame, 
-            height=6,
-            bg='#1a1f2a',
-            fg='#e6e9f0',
-            selectbackground='#2d7cf2',
+            height=8,  # Increased height
             font=('Consolas', 8)
         )
         self.events_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -300,6 +347,18 @@ class ControlPanel(ttk.Frame):
         if hasattr(self.app, 'noise_detector'):
             self.app.noise_detector.threshold = val
     
+    def update_confidence(self, value):
+        """Update object detection confidence (NEW)"""
+        val = float(value)
+        self.confidence_label.config(text=f"Confidence: {val:.2f}")
+        if hasattr(self.app, 'object_detector'):
+            self.app.object_detector.confidence_threshold = val
+    
+    def toggle_heatmap(self):
+        """Toggle heatmap display (NEW)"""
+        if hasattr(self.app, 'toggle_heatmap'):
+            self.app.toggle_heatmap(self.show_heatmap.get())
+    
     def toggle_setting(self):
         """Handle setting toggles"""
         # Update app settings
@@ -319,16 +378,16 @@ class ControlPanel(ttk.Frame):
     def update_motion_status(self, active):
         """Update motion status indicator"""
         if active:
-            self.motion_status.config(text="● Status: ACTIVE", foreground='#f25e5e')
+            self.motion_status.config(text="● Status: ACTIVE")
         else:
-            self.motion_status.config(text="● Status: None", foreground='#8a9199')
+            self.motion_status.config(text="● Status: None")
     
     def update_noise_status(self, active):
         """Update noise status indicator"""
         if active:
-            self.noise_status.config(text="● Status: ACTIVE", foreground='#fe9f4f')
+            self.noise_status.config(text="● Status: ACTIVE")
         else:
-            self.noise_status.config(text="● Status: None", foreground='#8a9199')
+            self.noise_status.config(text="● Status: None")
     
     def update_noise_level(self, level):
         """Update noise level meter"""
@@ -341,10 +400,30 @@ class ControlPanel(ttk.Frame):
         """Update FPS display"""
         self.fps_label.config(text=str(fps))
     
-    def update_stats(self, motion_events, noise_events, uptime):
-        """Update statistics"""
+    def update_stats(self, motion_events, noise_events, uptime, people_count=0, objects_count=0):
+        """Update statistics with people and object counts"""
         self.motion_events_label.config(text=str(motion_events))
         self.noise_events_label.config(text=str(noise_events))
+        
+        # Update people and object counts
+        if hasattr(self, 'people_label'):
+            self.people_label.config(text=str(people_count))
+        
+        if hasattr(self, 'objects_count_label'):
+            self.objects_count_label.config(text=str(objects_count))
+        
+        # Update objects list
+        if hasattr(self.app, 'detected_objects'):
+            object_types = {}
+            for obj in self.app.detected_objects:
+                class_name = obj['class']
+                object_types[class_name] = object_types.get(class_name, 0) + 1
+            
+            if object_types:
+                objects_text = ", ".join([f"{k}:{v}" for k, v in object_types.items()])
+                self.objects_list.config(text=objects_text)
+            else:
+                self.objects_list.config(text="None")
         
         # Format uptime
         hours = int(uptime // 3600)
@@ -357,11 +436,11 @@ class ControlPanel(ttk.Frame):
         if recording:
             self.camera_btn.config(text="STOP CAMERA")
             self.manual_btn.config(text="⏸ STOP RECORDING")
-            self.recording_indicator.config(text="● Recording", foreground='#f25e5e')
+            self.recording_indicator.config(text="● Recording")
         elif reset:
             self.camera_btn.config(text="START CAMERA")
             self.manual_btn.config(text="⏺ MANUAL RECORD")
-            self.recording_indicator.config(text="● Not Recording", foreground='#8a9199')
+            self.recording_indicator.config(text="● Not Recording")
     
     def get_setting(self, key):
         """Get setting value"""
@@ -375,6 +454,8 @@ class ControlPanel(ttk.Frame):
             return self.alert_enabled.get()
         elif key == 'recording_duration':
             return self.recording_duration.get()
+        elif key == 'show_heatmap':
+            return self.show_heatmap.get()
         return None
     
     def add_event(self, event_text):

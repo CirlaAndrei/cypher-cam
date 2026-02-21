@@ -1,4 +1,4 @@
-"""Main application class (simplified)"""
+"""Main application class for Cypher-Cam"""
 import tkinter as tk
 from tkinter import ttk, messagebox
 import cv2
@@ -13,9 +13,12 @@ from ui.video_frame import VideoFrame
 from ui.control_panel import ControlPanel
 from detectors.motion_detector import MotionDetector
 from detectors.noise_detector import NoiseDetector
+from detectors.object_detector import ObjectDetector
 from recording.video_recorder import VideoRecorder
 from recording.audio_recorder import AudioRecorder
 from utils.logger import setup_logger
+from utils.camera_utils import CameraInitializer
+from web_server import WebServer
 
 class CypherCam:
     """Main application class"""
@@ -33,6 +36,13 @@ class CypherCam:
         self.setup_components()
         self.setup_ui()
         
+        # Start web server
+        try:
+            self.web_server = WebServer(self)
+            self.web_server.start()
+        except Exception as e:
+            self.logger.error(f"Failed to start web server: {e}")
+        
         self.logger.info("Cypher-Cam initialized")
     
     def setup_components(self):
@@ -42,6 +52,7 @@ class CypherCam:
         # Detectors
         self.motion_detector = MotionDetector(threshold=25, min_area=500)
         self.noise_detector = NoiseDetector(threshold=0.1)
+        self.object_detector = ObjectDetector(confidence_threshold=0.5)
         
         # Recorders
         self.video_recorder = VideoRecorder()
@@ -60,6 +71,16 @@ class CypherCam:
         self.noise_events = 0
         self.last_motion_time = None
         self.last_noise_time = None
+        
+        # Object detection
+        self.people_count = 0
+        self.detected_objects = []
+        self.show_heatmap = True  # Toggle for heatmap effect
+        
+        # Performance settings
+        self.frame_skip = 2  # Process every 2nd frame
+        self.object_detection_interval = 10  # Run object detection every 10 frames
+        self.frame_counter = 0
     
     def setup_ui(self):
         """Setup the main UI layout"""
@@ -67,12 +88,12 @@ class CypherCam:
         main_frame = ttk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # Video frame (left side)
-        self.video_frame = VideoFrame(main_frame, self, style=self.theme)
+        # Video frame (left side) - NO style parameter
+        self.video_frame = VideoFrame(main_frame, self)
         self.video_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        # Control panel (right side)
-        self.control_panel = ControlPanel(main_frame, self, style=self.theme)
+        # Control panel (right side) - NO style parameter
+        self.control_panel = ControlPanel(main_frame, self)
         self.control_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
     
     def toggle_camera(self):
@@ -83,35 +104,60 @@ class CypherCam:
             self.stop_camera()
     
     def start_camera(self):
-        """Start camera and detectors"""
+        """Start camera and detectors with improved performance"""
         try:
-            # Start camera
-            self.cap = cv2.VideoCapture(0)
-            if not self.cap.isOpened():
-                messagebox.showerror("Error", "Could not open camera")
+            # Show loading status
+            self.control_panel.update_status("Initializing Camera...")
+            self.root.update()  # Force UI update
+            
+            # Use camera initializer with timeout
+            cap, error = CameraInitializer.init_camera_with_timeout(0, timeout=3)
+            
+            if error:
+                messagebox.showerror("Camera Error", error)
+                self.control_panel.update_status("Ready")
                 return
             
-            # Start noise detector
+            if not cap:
+                messagebox.showerror("Error", "Could not open camera")
+                self.control_panel.update_status("Ready")
+                return
+            
+            self.cap = cap
+            
+            # Set optimal properties for performance
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.cap.set(cv2.CAP_PROP_FPS, 30)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer size
+            self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)  # Disable autofocus for speed
+            
+            # Start noise detector in background
             try:
-                self.noise_detector.start_listening()
+                noise_thread = threading.Thread(target=self.noise_detector.start_listening)
+                noise_thread.daemon = True
+                noise_thread.start()
             except Exception as e:
                 self.logger.warning(f"Noise detector unavailable: {e}")
             
             self.is_running = True
             self.start_time = time.time()
-            self.control_panel.update_status("Camera Running")
+            self.frame_counter = 0
             
-            # Start processing thread
+            # Start video processing thread
             self.video_thread = threading.Thread(target=self.process_video)
             self.video_thread.daemon = True
             self.video_thread.start()
             
-            self.logger.info("Camera started")
+            # Update UI
+            self.control_panel.update_status("Camera Running")
             self.add_event("System started")
+            self.logger.info("Camera started")
             
         except Exception as e:
             self.logger.error(f"Start error: {e}")
             messagebox.showerror("Error", str(e))
+            self.control_panel.update_status("Ready")
     
     def stop_camera(self):
         """Stop camera and detectors"""
@@ -124,7 +170,10 @@ class CypherCam:
         
         # Stop detectors
         if hasattr(self, 'noise_detector'):
-            self.noise_detector.stop_listening()
+            try:
+                self.noise_detector.stop_listening()
+            except:
+                pass
         
         if self.cap:
             self.cap.release()
@@ -136,15 +185,18 @@ class CypherCam:
         self.add_event("System stopped")
     
     def process_video(self):
-        """Main video processing loop"""
+        """Main video processing loop with performance optimizations"""
         self.last_time = time.time()
         self.frame_count = 0
         
         while self.is_running:
             ret, frame = self.cap.read()
             if not ret:
-                break
+                self.logger.warning("Failed to capture frame")
+                time.sleep(0.1)  # Prevent CPU spinning
+                continue
             
+            self.frame_counter += 1
             self.current_frame = frame.copy()
             
             # Calculate FPS
@@ -155,40 +207,70 @@ class CypherCam:
                 self.frame_count = 0
                 self.last_time = current_time
                 self.control_panel.update_fps(self.fps)
+                self.video_frame.update_fps(self.fps)
             
-            # Detect motion
-            motion, area, processed_frame, boxes = self.motion_detector.detect(frame)
-            
-            if motion:
-                self.motion_events += 1
-                self.last_motion_time = time.time()
-                self.control_panel.update_motion_status(True)
-                self.video_frame.update_indicators(motion=True)
+            # Process frame (with frame skipping for performance)
+            if self.frame_counter % self.frame_skip == 0:
+                # Detect motion (always do this for security)
+                motion, area, processed_frame, boxes = self.motion_detector.detect(
+                    frame, show_heatmap=self.show_heatmap
+                )
                 
-                # Handle recording
-                self.handle_event_recording("motion", processed_frame)
-            else:
-                self.control_panel.update_motion_status(False)
-                self.video_frame.update_indicators(motion=False)
-            
-            # Detect noise
-            if self.noise_detector:
-                noise_level = self.noise_detector.get_current_noise_level()
-                noise_detected = self.noise_detector.noise_detected
-                
-                self.control_panel.update_noise_level(noise_level)
-                
-                if noise_detected:
-                    self.noise_events += 1
-                    self.last_noise_time = time.time()
-                    self.control_panel.update_noise_status(True)
-                    self.video_frame.update_indicators(noise=True)
+                if motion:
+                    self.motion_events += 1
+                    self.last_motion_time = time.time()
+                    self.control_panel.update_motion_status(True)
+                    self.video_frame.update_indicators(motion=True)
                     
                     # Handle recording
-                    self.handle_event_recording("noise", processed_frame)
+                    self.handle_event_recording("motion", processed_frame)
                 else:
-                    self.control_panel.update_noise_status(False)
-                    self.video_frame.update_indicators(noise=False)
+                    self.control_panel.update_motion_status(False)
+                    self.video_frame.update_indicators(motion=False)
+                
+                # Object detection (run less frequently to save CPU)
+                if self.frame_counter % (self.frame_skip * self.object_detection_interval) == 0:
+                    try:
+                        objects, processed_frame = self.object_detector.detect(processed_frame)
+                        self.detected_objects = objects
+                        self.people_count = self.object_detector.count_people(objects)
+                        
+                        # Draw people count on frame
+                        cv2.putText(processed_frame, f"People: {self.people_count}", 
+                                   (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                        
+                        # Draw object count
+                        cv2.putText(processed_frame, f"Objects: {len(objects)}", 
+                                   (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+                        
+                    except Exception as e:
+                        self.logger.error(f"Object detection error: {e}")
+                        processed_frame = frame.copy()
+            else:
+                # Skip heavy processing, just pass the frame
+                processed_frame = frame.copy()
+            
+            # Detect noise (lightweight, run every frame)
+            if self.noise_detector and self.noise_detector.is_listening:
+                try:
+                    noise_level = self.noise_detector.get_current_noise_level()
+                    noise_detected = self.noise_detector.noise_detected
+                    
+                    self.control_panel.update_noise_level(noise_level)
+                    
+                    if noise_detected:
+                        self.noise_events += 1
+                        self.last_noise_time = time.time()
+                        self.control_panel.update_noise_status(True)
+                        self.video_frame.update_indicators(noise=True)
+                        
+                        # Handle recording
+                        self.handle_event_recording("noise", processed_frame)
+                    else:
+                        self.control_panel.update_noise_status(False)
+                        self.video_frame.update_indicators(noise=False)
+                except:
+                    pass
             
             # Handle recording stop
             self.check_recording_timeout()
@@ -198,24 +280,41 @@ class CypherCam:
                 self.video_recorder.write_frame(processed_frame)
                 self.video_frame.update_indicators(recording=True)
                 
-                # Add audio if recording
+                # Add audio if recording (lightweight)
                 if self.audio_recorder.recording and self.noise_detector:
-                    if not self.noise_detector.audio_queue.empty():
-                        audio_data, _ = self.noise_detector.audio_queue.get()
-                        self.audio_recorder.add_frame(audio_data)
+                    try:
+                        if not self.noise_detector.audio_queue.empty():
+                            audio_data, _ = self.noise_detector.audio_queue.get_nowait()
+                            self.audio_recorder.add_frame(audio_data)
+                    except:
+                        pass
             else:
                 self.video_frame.update_indicators(recording=False)
             
-            # Update display
-            frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-            self.video_frame.update_display(frame_rgb)
+            # Add timestamp to frame
+            cv2.putText(processed_frame, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                       (10, processed_frame.shape[0] - 10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
-            # Update stats
-            self.control_panel.update_stats(
-                motion_events=self.motion_events,
-                noise_events=self.noise_events,
-                uptime=time.time() - self.start_time
-            )
+            # Update display
+            try:
+                frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+                self.video_frame.update_display(frame_rgb)
+            except:
+                pass
+            
+            # Update stats (every 30 frames to reduce UI updates)
+            if self.frame_counter % 30 == 0:
+                self.control_panel.update_stats(
+                    motion_events=self.motion_events,
+                    noise_events=self.noise_events,
+                    uptime=time.time() - self.start_time,
+                    people_count=self.people_count,
+                    objects_count=len(self.detected_objects)
+                )
+            
+            # Small sleep to prevent CPU overload
+            time.sleep(0.01)
     
     def handle_event_recording(self, event_type, frame):
         """Handle recording triggered by events"""
@@ -268,14 +367,30 @@ class CypherCam:
     def add_event(self, event_text):
         """Add event to log"""
         self.control_panel.add_event(event_text)
+    
+    def toggle_heatmap(self, enabled):
+        """Toggle heatmap display"""
+        self.show_heatmap = enabled
+        self.add_event(f"Heatmap {'enabled' if enabled else 'disabled'}")
 
 def main():
+    """Main entry point"""
+    print("\n" + "="*50)
+    print("🔒 Cypher-Cam Surveillance System")
+    print("="*50)
+    print("📱 Web interface: http://localhost:5000")
+    print("📹 Local app running...")
+    print("="*50 + "\n")
+    
     root = tk.Tk()
     app = CypherCam(root)
     
     def on_closing():
         if app.is_running:
             app.stop_camera()
+        # Stop web server
+        if hasattr(app, 'web_server'):
+            app.web_server.stop()
         root.destroy()
     
     root.protocol("WM_DELETE_WINDOW", on_closing)

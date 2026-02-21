@@ -16,8 +16,13 @@ class MotionDetector:
         self.total_motion_area = 0
         self.motion_regions = []  # Store regions where motion occurs most
         
-    def detect(self, frame):
-        """Detect motion in frame with improved visualization"""
+    def detect(self, frame, show_heatmap=True):
+        """Detect motion in frame with improved visualization
+        
+        Args:
+            frame: The video frame to process
+            show_heatmap: Boolean to enable/disable the purple heatmap effect
+        """
         # Convert to grayscale
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (21, 21), 0)
@@ -41,9 +46,10 @@ class MotionDetector:
         total_area = 0
         motion_boxes = []
         
-        # Draw motion heatmap effect
-        heatmap = cv2.applyColorMap(thresh, cv2.COLORMAP_JET)
-        frame = cv2.addWeighted(frame, 0.7, heatmap, 0.3, 0)
+        # Draw motion heatmap effect (only if enabled)
+        if show_heatmap:
+            heatmap = cv2.applyColorMap(thresh, cv2.COLORMAP_JET)
+            frame = cv2.addWeighted(frame, 0.7, heatmap, 0.3, 0)
         
         for contour in contours:
             area = cv2.contourArea(contour)
@@ -83,7 +89,7 @@ class MotionDetector:
             if len(self.motion_regions) > 1000:
                 self.motion_regions = self.motion_regions[-1000:]
             
-            # Draw motion heatmap points
+            # Draw motion heatmap points (always show these, they're not the purple overlay)
             for (cx, cy) in self.motion_regions:
                 cv2.circle(frame, (cx, cy), 2, (0, 165, 255), -1)
             

@@ -104,22 +104,48 @@ class CypherCam:
             self.stop_camera()
     
     def start_camera(self):
-        """Start camera and detectors with improved performance"""
+        """Start camera and detectors with improved performance and error handling"""
         try:
             # Show loading status
             self.control_panel.update_status("Initializing Camera...")
             self.root.update()  # Force UI update
             
-            # Use camera initializer with timeout
-            cap, error = CameraInitializer.init_camera_with_timeout(0, timeout=3)
+            # First, test if camera is accessible
+            working, message = CameraInitializer.test_camera_device(0)
+            if not working:
+                self.logger.warning(f"Camera test: {message}")
+                # Ask user if they want to continue trying
+                response = messagebox.askyesno(
+                    "Camera Warning",
+                    f"Camera test returned: {message}\n\n"
+                    "Do you want to try initializing anyway?"
+                )
+                if not response:
+                    self.control_panel.update_status("Ready")
+                    return
+            
+            # Use camera initializer with increased timeout (5 seconds)
+            cap, error = CameraInitializer.init_camera_with_timeout(0, timeout=5)
             
             if error:
-                messagebox.showerror("Camera Error", error)
+                self.logger.error(f"Camera error: {error}")
+                # Show more helpful error message
+                messagebox.showerror(
+                    "Camera Error", 
+                    f"Could not initialize camera:\n\n{error}\n\n"
+                    "Troubleshooting tips:\n"
+                    "1. Make sure no other app is using the camera\n"
+                    "2. Try restarting your computer\n"
+                    "3. Check Windows Camera privacy settings\n"
+                    "   (Settings → Privacy & Security → Camera)\n"
+                    "4. Update your camera drivers\n"
+                    "5. If using a laptop, check if there's a physical camera switch"
+                )
                 self.control_panel.update_status("Ready")
                 return
             
             if not cap:
-                messagebox.showerror("Error", "Could not open camera")
+                messagebox.showerror("Error", "Could not open camera - unknown error")
                 self.control_panel.update_status("Ready")
                 return
             
@@ -131,6 +157,12 @@ class CypherCam:
             self.cap.set(cv2.CAP_PROP_FPS, 30)
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer size
             self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)  # Disable autofocus for speed
+            
+            # Try to disable auto exposure for faster startup
+            try:
+                self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+            except:
+                pass
             
             # Start noise detector in background
             try:
@@ -152,11 +184,11 @@ class CypherCam:
             # Update UI
             self.control_panel.update_status("Camera Running")
             self.add_event("System started")
-            self.logger.info("Camera started")
+            self.logger.info("Camera started successfully")
             
         except Exception as e:
             self.logger.error(f"Start error: {e}")
-            messagebox.showerror("Error", str(e))
+            messagebox.showerror("Error", f"Unexpected error: {str(e)}")
             self.control_panel.update_status("Ready")
     
     def stop_camera(self):
@@ -177,6 +209,7 @@ class CypherCam:
         
         if self.cap:
             self.cap.release()
+            self.cap = None
         
         self.control_panel.update_status("Ready")
         self.control_panel.update_recording_button(reset=True)
@@ -188,133 +221,144 @@ class CypherCam:
         """Main video processing loop with performance optimizations"""
         self.last_time = time.time()
         self.frame_count = 0
+        error_count = 0
         
         while self.is_running:
-            ret, frame = self.cap.read()
-            if not ret:
-                self.logger.warning("Failed to capture frame")
-                time.sleep(0.1)  # Prevent CPU spinning
-                continue
-            
-            self.frame_counter += 1
-            self.current_frame = frame.copy()
-            
-            # Calculate FPS
-            self.frame_count += 1
-            current_time = time.time()
-            if current_time - self.last_time >= 1.0:
-                self.fps = self.frame_count
-                self.frame_count = 0
-                self.last_time = current_time
-                self.control_panel.update_fps(self.fps)
-                self.video_frame.update_fps(self.fps)
-            
-            # Process frame (with frame skipping for performance)
-            if self.frame_counter % self.frame_skip == 0:
-                # Detect motion (always do this for security)
-                motion, area, processed_frame, boxes = self.motion_detector.detect(
-                    frame, show_heatmap=self.show_heatmap
-                )
+            try:
+                ret, frame = self.cap.read()
+                if not ret:
+                    error_count += 1
+                    if error_count > 30:  # If we get 30 consecutive errors, stop
+                        self.logger.error("Too many frame read errors, stopping camera")
+                        self.root.after(0, self.stop_camera)
+                        break
+                    time.sleep(0.1)  # Prevent CPU spinning
+                    continue
                 
-                if motion:
-                    self.motion_events += 1
-                    self.last_motion_time = time.time()
-                    self.control_panel.update_motion_status(True)
-                    self.video_frame.update_indicators(motion=True)
-                    
-                    # Handle recording
-                    self.handle_event_recording("motion", processed_frame)
-                else:
-                    self.control_panel.update_motion_status(False)
-                    self.video_frame.update_indicators(motion=False)
+                error_count = 0  # Reset error count on successful read
+                self.frame_counter += 1
+                self.current_frame = frame.copy()
                 
-                # Object detection (run less frequently to save CPU)
-                if self.frame_counter % (self.frame_skip * self.object_detection_interval) == 0:
-                    try:
-                        objects, processed_frame = self.object_detector.detect(processed_frame)
-                        self.detected_objects = objects
-                        self.people_count = self.object_detector.count_people(objects)
-                        
-                        # Draw people count on frame
-                        cv2.putText(processed_frame, f"People: {self.people_count}", 
-                                   (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                        
-                        # Draw object count
-                        cv2.putText(processed_frame, f"Objects: {len(objects)}", 
-                                   (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-                        
-                    except Exception as e:
-                        self.logger.error(f"Object detection error: {e}")
-                        processed_frame = frame.copy()
-            else:
-                # Skip heavy processing, just pass the frame
-                processed_frame = frame.copy()
-            
-            # Detect noise (lightweight, run every frame)
-            if self.noise_detector and self.noise_detector.is_listening:
-                try:
-                    noise_level = self.noise_detector.get_current_noise_level()
-                    noise_detected = self.noise_detector.noise_detected
+                # Calculate FPS
+                self.frame_count += 1
+                current_time = time.time()
+                if current_time - self.last_time >= 1.0:
+                    self.fps = self.frame_count
+                    self.frame_count = 0
+                    self.last_time = current_time
+                    self.control_panel.update_fps(self.fps)
+                    self.video_frame.update_fps(self.fps)
+                
+                # Process frame (with frame skipping for performance)
+                if self.frame_counter % self.frame_skip == 0:
+                    # Detect motion (always do this for security)
+                    motion, area, processed_frame, boxes = self.motion_detector.detect(
+                        frame, show_heatmap=self.show_heatmap
+                    )
                     
-                    self.control_panel.update_noise_level(noise_level)
-                    
-                    if noise_detected:
-                        self.noise_events += 1
-                        self.last_noise_time = time.time()
-                        self.control_panel.update_noise_status(True)
-                        self.video_frame.update_indicators(noise=True)
+                    if motion:
+                        self.motion_events += 1
+                        self.last_motion_time = time.time()
+                        self.control_panel.update_motion_status(True)
+                        self.video_frame.update_indicators(motion=True)
                         
                         # Handle recording
-                        self.handle_event_recording("noise", processed_frame)
+                        self.handle_event_recording("motion", processed_frame)
                     else:
-                        self.control_panel.update_noise_status(False)
-                        self.video_frame.update_indicators(noise=False)
-                except:
-                    pass
-            
-            # Handle recording stop
-            self.check_recording_timeout()
-            
-            # Write frame if recording
-            if self.video_recorder.recording:
-                self.video_recorder.write_frame(processed_frame)
-                self.video_frame.update_indicators(recording=True)
+                        self.control_panel.update_motion_status(False)
+                        self.video_frame.update_indicators(motion=False)
+                    
+                    # Object detection (run less frequently to save CPU)
+                    if self.frame_counter % (self.frame_skip * self.object_detection_interval) == 0:
+                        try:
+                            objects, processed_frame = self.object_detector.detect(processed_frame)
+                            self.detected_objects = objects
+                            self.people_count = self.object_detector.count_people(objects)
+                            
+                            # Draw people count on frame
+                            cv2.putText(processed_frame, f"People: {self.people_count}", 
+                                       (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                            
+                            # Draw object count
+                            cv2.putText(processed_frame, f"Objects: {len(objects)}", 
+                                       (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+                            
+                        except Exception as e:
+                            self.logger.error(f"Object detection error: {e}")
+                            processed_frame = frame.copy()
+                else:
+                    # Skip heavy processing, just pass the frame
+                    processed_frame = frame.copy()
                 
-                # Add audio if recording (lightweight)
-                if self.audio_recorder.recording and self.noise_detector:
+                # Detect noise (lightweight, run every frame)
+                if self.noise_detector and hasattr(self.noise_detector, 'is_listening') and self.noise_detector.is_listening:
                     try:
-                        if not self.noise_detector.audio_queue.empty():
-                            audio_data, _ = self.noise_detector.audio_queue.get_nowait()
-                            self.audio_recorder.add_frame(audio_data)
+                        noise_level = self.noise_detector.get_current_noise_level()
+                        noise_detected = self.noise_detector.noise_detected
+                        
+                        self.control_panel.update_noise_level(noise_level)
+                        
+                        if noise_detected:
+                            self.noise_events += 1
+                            self.last_noise_time = time.time()
+                            self.control_panel.update_noise_status(True)
+                            self.video_frame.update_indicators(noise=True)
+                            
+                            # Handle recording
+                            self.handle_event_recording("noise", processed_frame)
+                        else:
+                            self.control_panel.update_noise_status(False)
+                            self.video_frame.update_indicators(noise=False)
                     except:
                         pass
-            else:
-                self.video_frame.update_indicators(recording=False)
-            
-            # Add timestamp to frame
-            cv2.putText(processed_frame, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
-                       (10, processed_frame.shape[0] - 10), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            
-            # Update display
-            try:
-                frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-                self.video_frame.update_display(frame_rgb)
-            except:
-                pass
-            
-            # Update stats (every 30 frames to reduce UI updates)
-            if self.frame_counter % 30 == 0:
-                self.control_panel.update_stats(
-                    motion_events=self.motion_events,
-                    noise_events=self.noise_events,
-                    uptime=time.time() - self.start_time,
-                    people_count=self.people_count,
-                    objects_count=len(self.detected_objects)
-                )
-            
-            # Small sleep to prevent CPU overload
-            time.sleep(0.01)
+                
+                # Handle recording stop
+                self.check_recording_timeout()
+                
+                # Write frame if recording
+                if self.video_recorder.recording:
+                    self.video_recorder.write_frame(processed_frame)
+                    self.video_frame.update_indicators(recording=True)
+                    
+                    # Add audio if recording (lightweight)
+                    if self.audio_recorder.recording and self.noise_detector:
+                        try:
+                            if not self.noise_detector.audio_queue.empty():
+                                audio_data, _ = self.noise_detector.audio_queue.get_nowait()
+                                self.audio_recorder.add_frame(audio_data)
+                        except:
+                            pass
+                else:
+                    self.video_frame.update_indicators(recording=False)
+                
+                # Add timestamp to frame
+                cv2.putText(processed_frame, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                           (10, processed_frame.shape[0] - 10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                
+                # Update display
+                try:
+                    frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+                    self.video_frame.update_display(frame_rgb)
+                except:
+                    pass
+                
+                # Update stats (every 30 frames to reduce UI updates)
+                if self.frame_counter % 30 == 0:
+                    self.control_panel.update_stats(
+                        motion_events=self.motion_events,
+                        noise_events=self.noise_events,
+                        uptime=time.time() - self.start_time,
+                        people_count=self.people_count,
+                        objects_count=len(self.detected_objects)
+                    )
+                
+                # Small sleep to prevent CPU overload
+                time.sleep(0.01)
+                
+            except Exception as e:
+                self.logger.error(f"Error in video processing loop: {e}")
+                time.sleep(0.1)
     
     def handle_event_recording(self, event_type, frame):
         """Handle recording triggered by events"""

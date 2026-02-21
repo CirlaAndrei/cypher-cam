@@ -9,9 +9,15 @@ class VideoFrame(ttk.Frame):
     """Enhanced video display frame with overlays and controls"""
     
     def __init__(self, parent, app, **kwargs):
+        # Remove style from kwargs if it exists (ttk.Frame doesn't accept it)
+        if 'style' in kwargs:
+            del kwargs['style']
+            
         super().__init__(parent, **kwargs)
         self.app = app
-        self.style = kwargs.get('style')
+        
+        # Configure the frame
+        self.configure(relief='flat', padding=0)
         
         # Video display
         self.video_label = ttk.Label(self)
@@ -109,47 +115,56 @@ class VideoFrame(ttk.Frame):
     
     def update_display(self, frame):
         """Update video display with frame"""
-        # Resize frame to fit
-        height, width = frame.shape[:2]
-        max_height = 500
-        max_width = 700
-        
-        if height > max_height or width > max_width:
-            scale = min(max_height/height, max_width/width)
-            new_width = int(width * scale)
-            new_height = int(height * scale)
-            frame = cv2.resize(frame, (new_width, new_height))
-        
-        # Convert to PhotoImage
-        image = Image.fromarray(frame)
-        photo = ImageTk.PhotoImage(image)
-        
-        # Update label
-        self.video_label.config(image=photo)
-        self.video_label.image = photo
+        try:
+            # Resize frame to fit
+            height, width = frame.shape[:2]
+            max_height = 500
+            max_width = 700
+            
+            if height > max_height or width > max_width:
+                scale = min(max_height/height, max_width/width)
+                new_width = int(width * scale)
+                new_height = int(height * scale)
+                frame = cv2.resize(frame, (new_width, new_height))
+            
+            # Convert to PhotoImage
+            image = Image.fromarray(frame)
+            photo = ImageTk.PhotoImage(image)
+            
+            # Update label
+            self.video_label.config(image=photo)
+            self.video_label.image = photo  # Keep a reference
+        except Exception as e:
+            print(f"Error updating display: {e}")
     
     def update_indicators(self, motion=False, noise=False, recording=False):
         """Update status indicators"""
-        # Motion indicator
-        if motion:
-            self.motion_indicator.config(fg='#ff4444', text='● Motion ACTIVE')
-        else:
-            self.motion_indicator.config(fg='#888888', text='● Motion')
-        
-        # Noise indicator
-        if noise:
-            self.noise_indicator.config(fg='#ffaa00', text='● Noise ACTIVE')
-        else:
-            self.noise_indicator.config(fg='#888888', text='● Noise')
-        
-        # Recording indicator
-        if recording:
-            self.rec_indicator.config(fg='#ff4444', text='⏺ REC')
-            self.record_btn.config(bg='#ff4444', text='⏸')
-        else:
-            self.rec_indicator.config(fg='#888888', text='⏺')
-            self.record_btn.config(bg='#ff4444', text='⏺')
-        
-        # Update FPS
-        if hasattr(self.app, 'fps'):
-            self.fps_label.config(text=f'FPS: {self.app.fps}')
+        try:
+            # Motion indicator
+            if motion:
+                self.motion_indicator.config(fg='#ff4444', text='● Motion ACTIVE')
+            else:
+                self.motion_indicator.config(fg='#888888', text='● Motion')
+            
+            # Noise indicator
+            if noise:
+                self.noise_indicator.config(fg='#ffaa00', text='● Noise ACTIVE')
+            else:
+                self.noise_indicator.config(fg='#888888', text='● Noise')
+            
+            # Recording indicator
+            if recording:
+                self.rec_indicator.config(fg='#ff4444', text='⏺ REC')
+                self.record_btn.config(bg='#ff4444', text='⏸')
+            else:
+                self.rec_indicator.config(fg='#888888', text='⏺')
+                self.record_btn.config(bg='#ff4444', text='⏺')
+        except Exception as e:
+            print(f"Error updating indicators: {e}")
+    
+    def update_fps(self, fps):
+        """Update FPS display"""
+        try:
+            self.fps_label.config(text=f'FPS: {fps}')
+        except:
+            pass

@@ -1,0 +1,14 @@
+﻿# Core dependencies
+opencv-python==4.8.1.78
+numpy==1.24.3
+Pillow==10.0.0
+
+# GUI - tkinter comes with Python
+
+# Audio processing
+pip install pyaudio
+sounddevice==0.4.6
+
+# Additional utilities
+pygame==2.5.0
+schedule==1.2.0

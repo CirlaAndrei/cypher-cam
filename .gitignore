@@ -1,0 +1,31 @@
+﻿# Virtual Environment
+venv/
+env/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+
+# Recordings
+recordings/
+*.mp4
+*.avi
+*.wav
+
+# Config
+config/local_config.py
+*.db
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

@@ -6,6 +6,8 @@ import threading
 import time
 import os
 from datetime import datetime
+from utils.email_alerts import EmailAlertSystem
+
 
 # Import our modules
 from ui.styles import CyberTheme

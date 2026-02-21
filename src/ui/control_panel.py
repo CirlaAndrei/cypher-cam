@@ -2,6 +2,7 @@
 import tkinter as tk
 from tkinter import ttk
 import time
+from tkinter import simpledialog, messagebox
 
 class ControlPanel(ttk.Frame):
     """Control panel with settings and stats"""
@@ -19,7 +20,13 @@ class ControlPanel(ttk.Frame):
         self.auto_record = tk.BooleanVar(value=False)
         self.alert_enabled = tk.BooleanVar(value=True)
         self.recording_duration = tk.IntVar(value=10)
-        self.show_heatmap = tk.BooleanVar(value=True)  # New heatmap toggle
+        self.show_heatmap = tk.BooleanVar(value=True)
+        
+        # Email settings variables
+        self.email_enabled = tk.BooleanVar(value=False)
+        self.email_on_motion = tk.BooleanVar(value=True)
+        self.email_on_noise = tk.BooleanVar(value=False)
+        self.email_on_people = tk.BooleanVar(value=True)
         
         # Create UI
         self.setup_ui()
@@ -43,11 +50,14 @@ class ControlPanel(ttk.Frame):
         # Noise Detection Section
         self.create_noise_section()
         
-        # Object Detection Section (NEW)
+        # Object Detection Section
         self.create_object_section()
         
         # Recording Settings Section
         self.create_recording_section()
+
+        # Email Section
+        self.create_email_section()
         
         # Statistics Section
         self.create_stats_section()
@@ -108,7 +118,7 @@ class ControlPanel(ttk.Frame):
         self.area_label = ttk.Label(motion_frame, text="Min Area: 500")
         self.area_label.pack()
         
-        # Heatmap toggle (NEW)
+        # Heatmap toggle
         ttk.Checkbutton(
             motion_frame, 
             text="Show Heatmap Effect",
@@ -165,7 +175,7 @@ class ControlPanel(ttk.Frame):
         self.noise_status.pack(pady=5)
     
     def create_object_section(self):
-        """Create object detection controls (NEW)"""
+        """Create object detection controls"""
         object_frame = ttk.LabelFrame(self, text="Object Detection", padding=10)
         object_frame.pack(fill=tk.X, pady=5)
         
@@ -215,7 +225,7 @@ class ControlPanel(ttk.Frame):
         ttk.Checkbutton(
             record_frame, 
             text="Record on Objects",
-            variable=tk.BooleanVar(value=False),  # Placeholder for future
+            variable=tk.BooleanVar(value=False),
             command=self.toggle_setting
         ).pack(anchor=tk.W, pady=2)
         
@@ -263,6 +273,76 @@ class ControlPanel(ttk.Frame):
         )
         self.recording_indicator.pack()
     
+    def create_email_section(self):
+        """Create email alert settings section"""
+        email_frame = ttk.LabelFrame(self, text="Email Alerts", padding=10)
+        email_frame.pack(fill=tk.X, pady=5)
+        
+        # Email toggle
+        ttk.Checkbutton(
+            email_frame, 
+            text="Enable Email Alerts",
+            variable=self.email_enabled,
+            command=self.toggle_email
+        ).pack(anchor=tk.W, pady=2)
+        
+        # Status indicator
+        self.email_status = ttk.Label(email_frame, text="● Not Configured", foreground='#8a9199')
+        self.email_status.pack(anchor=tk.W, pady=2)
+        
+        # Configure button
+        self.email_config_btn = ttk.Button(
+            email_frame,
+            text="⚙️ Configure Email",
+            command=self.configure_email
+        )
+        self.email_config_btn.pack(fill=tk.X, pady=2)
+        
+        # Test button
+        self.email_test_btn = ttk.Button(
+            email_frame,
+            text="📧 Test Connection",
+            command=self.test_email,
+            state='disabled'
+        )
+        self.email_test_btn.pack(fill=tk.X, pady=2)
+        
+        # Alert options
+        ttk.Checkbutton(
+            email_frame, 
+            text="Alert on Motion",
+            variable=self.email_on_motion,
+            command=self.toggle_email_setting
+        ).pack(anchor=tk.W, pady=2)
+        
+        ttk.Checkbutton(
+            email_frame, 
+            text="Alert on Noise",
+            variable=self.email_on_noise,
+            command=self.toggle_email_setting
+        ).pack(anchor=tk.W, pady=2)
+        
+        ttk.Checkbutton(
+            email_frame, 
+            text="Alert on People Detected",
+            variable=self.email_on_people,
+            command=self.toggle_email_setting
+        ).pack(anchor=tk.W, pady=2)
+        
+        # Cooldown selector
+        cooldown_frame = ttk.Frame(email_frame)
+        cooldown_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(cooldown_frame, text="Cooldown:").pack(side=tk.LEFT)
+        self.email_cooldown = ttk.Spinbox(
+            cooldown_frame,
+            from_=10, to=300,
+            width=5,
+            command=self.update_email_cooldown
+        )
+        self.email_cooldown.pack(side=tk.LEFT, padx=5)
+        ttk.Label(cooldown_frame, text="seconds").pack(side=tk.LEFT)
+    
     def create_stats_section(self):
         """Create statistics display"""
         stats_frame = ttk.LabelFrame(self, text="Statistics", padding=10)
@@ -290,7 +370,7 @@ class ControlPanel(ttk.Frame):
         self.uptime_label = ttk.Label(stats_grid, text="00:00:00")
         self.uptime_label.grid(row=1, column=3, sticky=tk.W, pady=2, padx=(10,0))
 
-        # Row 3 (NEW - People count)
+        # Row 3
         ttk.Label(stats_grid, text="People:", font=('Segoe UI', 9, 'bold')).grid(row=2, column=0, sticky=tk.W, pady=2)
         self.people_label = ttk.Label(stats_grid, text="0")
         self.people_label.grid(row=2, column=1, sticky=tk.W, pady=2, padx=(10,0))
@@ -310,7 +390,7 @@ class ControlPanel(ttk.Frame):
         
         self.events_listbox = tk.Listbox(
             listbox_frame, 
-            height=8,  # Increased height
+            height=8,
             font=('Consolas', 8)
         )
         self.events_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -326,93 +406,77 @@ class ControlPanel(ttk.Frame):
             command=self.clear_events
         ).pack(pady=5)
     
+    # Update methods
     def update_threshold(self, value):
-        """Update motion threshold"""
         val = int(float(value))
         self.threshold_label.config(text=f"Threshold: {val}")
         if hasattr(self.app, 'motion_detector'):
             self.app.motion_detector.threshold = val
     
     def update_area(self, value):
-        """Update min area"""
         val = int(float(value))
         self.area_label.config(text=f"Min Area: {val}")
         if hasattr(self.app, 'motion_detector'):
             self.app.motion_detector.min_area = val
     
     def update_noise_threshold(self, value):
-        """Update noise threshold"""
         val = float(value)
         self.noise_threshold_label.config(text=f"Threshold: {val:.2f}")
         if hasattr(self.app, 'noise_detector'):
             self.app.noise_detector.threshold = val
     
     def update_confidence(self, value):
-        """Update object detection confidence (NEW)"""
         val = float(value)
         self.confidence_label.config(text=f"Confidence: {val:.2f}")
         if hasattr(self.app, 'object_detector'):
             self.app.object_detector.confidence_threshold = val
     
     def toggle_heatmap(self):
-        """Toggle heatmap display (NEW)"""
         if hasattr(self.app, 'toggle_heatmap'):
             self.app.toggle_heatmap(self.show_heatmap.get())
     
     def toggle_setting(self):
-        """Handle setting toggles"""
-        # Update app settings
         self.app.record_on_motion = self.record_on_motion.get()
         self.app.record_on_noise = self.record_on_noise.get()
         self.app.auto_record = self.auto_record.get()
         self.app.alert_enabled = self.alert_enabled.get()
     
     def update_duration(self):
-        """Update recording duration"""
         self.app.recording_duration = self.recording_duration.get()
     
     def update_status(self, status):
-        """Update camera status"""
         self.status_label.config(text=f"● Status: {status}")
     
     def update_motion_status(self, active):
-        """Update motion status indicator"""
         if active:
             self.motion_status.config(text="● Status: ACTIVE")
         else:
             self.motion_status.config(text="● Status: None")
     
     def update_noise_status(self, active):
-        """Update noise status indicator"""
         if active:
             self.noise_status.config(text="● Status: ACTIVE")
         else:
             self.noise_status.config(text="● Status: None")
     
     def update_noise_level(self, level):
-        """Update noise level meter"""
-        # Scale to percentage (max 0.5)
         percent = min(100, (level / 0.5) * 100)
         self.noise_bar['value'] = percent
         self.noise_value.config(text=f"{level:.3f}")
     
     def update_fps(self, fps):
-        """Update FPS display"""
         self.fps_label.config(text=str(fps))
     
     def update_stats(self, motion_events, noise_events, uptime, people_count=0, objects_count=0):
-        """Update statistics with people and object counts"""
         self.motion_events_label.config(text=str(motion_events))
         self.noise_events_label.config(text=str(noise_events))
         
-        # Update people and object counts
         if hasattr(self, 'people_label'):
             self.people_label.config(text=str(people_count))
         
         if hasattr(self, 'objects_count_label'):
             self.objects_count_label.config(text=str(objects_count))
         
-        # Update objects list
         if hasattr(self.app, 'detected_objects'):
             object_types = {}
             for obj in self.app.detected_objects:
@@ -425,14 +489,12 @@ class ControlPanel(ttk.Frame):
             else:
                 self.objects_list.config(text="None")
         
-        # Format uptime
         hours = int(uptime // 3600)
         minutes = int((uptime % 3600) // 60)
         seconds = int(uptime % 60)
         self.uptime_label.config(text=f"{hours:02d}:{minutes:02d}:{seconds:02d}")
     
     def update_recording_button(self, recording=False, reset=False):
-        """Update recording button state"""
         if recording:
             self.camera_btn.config(text="STOP CAMERA")
             self.manual_btn.config(text="⏸ STOP RECORDING")
@@ -443,7 +505,6 @@ class ControlPanel(ttk.Frame):
             self.recording_indicator.config(text="● Not Recording")
     
     def get_setting(self, key):
-        """Get setting value"""
         if key == 'record_on_motion':
             return self.record_on_motion.get()
         elif key == 'record_on_noise':
@@ -459,13 +520,141 @@ class ControlPanel(ttk.Frame):
         return None
     
     def add_event(self, event_text):
-        """Add event to log"""
         timestamp = time.strftime('%H:%M:%S')
         self.events_listbox.insert(0, f"[{timestamp}] {event_text}")
-        # Keep only last 20 events
         while self.events_listbox.size() > 20:
             self.events_listbox.delete(20)
     
     def clear_events(self):
-        """Clear all events"""
         self.events_listbox.delete(0, tk.END)
+    
+    # Email methods
+    def toggle_email(self):
+        """Toggle email alerts"""
+        if hasattr(self.app, 'email_alerts'):
+            self.app.email_alerts.enabled = self.email_enabled.get()
+            self.update_email_status()
+    
+    def toggle_email_setting(self):
+        """Toggle individual email alert settings"""
+        if hasattr(self.app, 'email_settings'):
+            self.app.email_settings = {
+                'motion': self.email_on_motion.get(),
+                'noise': self.email_on_noise.get(),
+                'people': self.email_on_people.get()
+            }
+    
+    def update_email_cooldown(self):
+        """Update email cooldown"""
+        if hasattr(self.app, 'email_alerts'):
+            self.app.email_alerts.alert_cooldown = int(self.email_cooldown.get())
+    
+    def configure_email(self):
+        """Open email configuration dialog"""
+        if not hasattr(self.app, 'email_alerts'):
+            messagebox.showerror("Error", "Email system not initialized")
+            return
+        
+        dialog = tk.Toplevel(self)
+        dialog.title("Email Configuration")
+        dialog.geometry("500x450")
+        dialog.configure(bg='#0a0e14')
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.focus_set()
+        
+        # Title
+        ttk.Label(dialog, text="Email Alert Settings", 
+                  font=('Segoe UI', 14, 'bold')).pack(pady=10)
+        
+        # Create form
+        frame = ttk.Frame(dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        # SMTP Server
+        ttk.Label(frame, text="SMTP Server:").pack(anchor=tk.W, pady=(5,0))
+        smtp_entry = ttk.Entry(frame, width=40)
+        smtp_entry.insert(0, getattr(self.app.email_alerts, 'smtp_server', 'smtp.gmail.com'))
+        smtp_entry.pack(fill=tk.X, pady=2)
+        
+        # SMTP Port
+        ttk.Label(frame, text="Port:").pack(anchor=tk.W, pady=(5,0))
+        port_entry = ttk.Entry(frame, width=10)
+        port_entry.insert(0, str(getattr(self.app.email_alerts, 'smtp_port', 587)))
+        port_entry.pack(anchor=tk.W, pady=2)
+        
+        # Sender Email
+        ttk.Label(frame, text="Sender Email:").pack(anchor=tk.W, pady=(5,0))
+        sender_entry = ttk.Entry(frame, width=40)
+        sender_entry.insert(0, getattr(self.app.email_alerts, 'sender_email', ''))
+        sender_entry.pack(fill=tk.X, pady=2)
+        
+        # Sender Password
+        ttk.Label(frame, text="Password (App Password for Gmail):").pack(anchor=tk.W, pady=(5,0))
+        password_entry = ttk.Entry(frame, width=40, show='*')
+        password_entry.insert(0, getattr(self.app.email_alerts, 'sender_password', ''))
+        password_entry.pack(fill=tk.X, pady=2)
+        
+        # Recipient Email
+        ttk.Label(frame, text="Recipient Email:").pack(anchor=tk.W, pady=(5,0))
+        recipient_entry = ttk.Entry(frame, width=40)
+        recipient_entry.insert(0, getattr(self.app.email_alerts, 'recipient_email', ''))
+        recipient_entry.pack(fill=tk.X, pady=2)
+        
+        # Note
+        note = tk.Message(frame, 
+                         text="For Gmail, use an App Password (not regular password)\nGet one: https://myaccount.google.com/apppasswords",
+                         width=400, bg='#1a1f2a', fg='#fe9f4f')
+        note.pack(pady=10)
+        
+        # Buttons
+        button_frame = ttk.Frame(frame)
+        button_frame.pack(fill=tk.X, pady=10)
+        
+        def save_settings():
+            self.app.email_alerts.update_settings(
+                enabled=self.email_enabled.get(),
+                sender_email=sender_entry.get(),
+                sender_password=password_entry.get(),
+                recipient_email=recipient_entry.get(),
+                smtp_server=smtp_entry.get(),
+                smtp_port=int(port_entry.get()),
+                cooldown=int(self.email_cooldown.get())
+            )
+            self.update_email_status()
+            dialog.destroy()
+            messagebox.showinfo("Success", "Email settings saved!")
+        
+        ttk.Button(button_frame, text="Save", command=save_settings).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+        
+        def test_connection():
+            success, msg = self.app.email_alerts.test_connection()
+            if success:
+                messagebox.showinfo("Success", "Email connection successful!")
+            else:
+                messagebox.showerror("Error", f"Connection failed:\n{msg}")
+        
+        ttk.Button(button_frame, text="Test Connection", command=test_connection).pack(side=tk.RIGHT, padx=5)
+    
+    def test_email(self):
+        """Test email configuration"""
+        if hasattr(self.app, 'email_alerts'):
+            success, msg = self.app.email_alerts.test_connection()
+            if success:
+                messagebox.showinfo("Success", "Email connection successful!")
+            else:
+                messagebox.showerror("Error", f"Connection failed:\n{msg}")
+    
+    def update_email_status(self):
+        """Update email status indicator"""
+        if hasattr(self.app, 'email_alerts') and self.app.email_alerts.enabled:
+            if self.app.email_alerts.sender_email:
+                self.email_status.config(text="● Enabled", foreground='#41d47d')
+                self.email_test_btn.config(state='normal')
+            else:
+                self.email_status.config(text="● Not Configured", foreground='#fe9f4f')
+                self.email_test_btn.config(state='disabled')
+        else:
+            self.email_status.config(text="● Disabled", foreground='#8a9199')
+            self.email_test_btn.config(state='disabled')
